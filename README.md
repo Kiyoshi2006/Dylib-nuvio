@@ -14,14 +14,14 @@ A TrollStore/TrollFools-oriented arm64 tweak build for Nuvio iOS. The workflow b
 
 This is an experimental first build, not a claim that every Nuvio text element is covered. Nuvio 0.6.2 uses Compose/Skiko for much of its interface, so UIKit `UIFont` hooks do **not** guarantee that Compose-rendered text changes. A proper full interface-font implementation needs a verified hook in the exact Compose/Skiko font creation path for the targeted Nuvio build. Video-font application also depends on the MPV symbols being imported through rebinding and on the player's support for changing `sub-font` at runtime.
 
-The IPA download used by default is the first download URL in the repository's `cmp-rewrite/store.json`. If that URL is not a decrypted IPA or does not match the app version you use, provide a direct URL to your own decrypted IPA through the `ipa_url` workflow input.
+The workflow automatically downloads the first IPA URL listed in the repository's `cmp-rewrite/store.json`; no IPA upload or manual URL input is required. The URL must provide a valid IPA compatible with the injection script.
 
 ## Build
 
 1. Fork/copy this directory into a GitHub repository.
 2. Commit `Tweak.m`, `inject.py`, and `.github/workflows/build-nuvio-font-manager.yml`.
 3. Open **Actions → Build Nuvio with Font Manager → Run workflow**.
-4. Optionally provide a direct IPA URL in `ipa_url`.
+4. Wait for the workflow to download the IPA, compile the dylib, inject it, and package the result.
 5. Download the `Nuvio-FontManager.ipa` artifact.
 6. Install with TrollStore. Keep the original IPA so you can revert if the injected app crashes.
 
