@@ -1,8 +1,20 @@
-name: Build Nuvio IPA with tab bar hidden
+name: Build Nuvio with Font Manager
 
 on:
   workflow_dispatch:
+    inputs:
+      ipa_url:
+        description: 'Direct URL to a decrypted Nuvio IPA (optional; empty = official store.json URL)'
+        required: false
+        type: string
   push:
+    paths:
+      - '.github/workflows/build-nuvio-font-manager.yml'
+      - 'Tweak.m'
+      - 'inject.py'
+
+permissions:
+  contents: read
 
 jobs:
   build:
@@ -10,190 +22,73 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Write sources
+      - name: Download Nuvio IPA
+        shell: bash
+        env:
+          IPA_URL_INPUT: ${{ inputs.ipa_url }}
         run: |
-          cat > Tweak.m <<'EOF'
-          // NuvioHideTabBar v4 - chèn vào file chính Nuvio. Ẩn mọi UITabBar native, quét định kỳ,
-          // báo bằng hộp thoại khi app active.
-          #import <UIKit/UIKit.h>
-          #import <objc/runtime.h>
+          set -euo pipefail
+          if [[ -n "${IPA_URL_INPUT:-}" ]]; then
+            url="$IPA_URL_INPUT"
+          else
+            url="$(python3 - <<'PY'
+          import json, urllib.request
+          u = 'https://raw.githubusercontent.com/NuvioMedia/NuvioMobile/cmp-rewrite/store.json'
+          d = json.load(urllib.request.urlopen(u, timeout=30))
+          print(d['apps'][0]['versions'][0]['downloadURL'])
+          PY
+          )"
+          fi
+          echo "IPA source selected"
+          curl -fL --retry 3 --retry-delay 2 --connect-timeout 20 -o nuvio.ipa "$url"
+          file nuvio.ipa
+          unzip -tq nuvio.ipa
 
-          static void (*orig_layoutSubviews)(UITabBar *, SEL);
-          static void (*orig_setHidden)(UITabBar *, SEL, BOOL);
-
-          static void hideView(UIView *v) {
-              if ([v isKindOfClass:[UITabBar class]] && orig_setHidden) {
-                  orig_setHidden((UITabBar *)v, @selector(setHidden:), YES);
-              } else {
-                  v.hidden = YES;
-              }
-              v.alpha = 0;
-              v.userInteractionEnabled = NO;
-          }
-
-          static void new_layoutSubviews(UITabBar *self, SEL _cmd) {
-              if (orig_layoutSubviews) orig_layoutSubviews(self, _cmd);
-              hideView(self);
-          }
-
-          static void new_setHidden(UITabBar *self, SEL _cmd, BOOL hidden) {
-              hideView(self);
-          }
-
-          static IMP hookMethod(Class cls, SEL sel, IMP newImp) {
-              Method m = class_getInstanceMethod(cls, sel);
-              if (!m) return NULL;
-              IMP orig = method_getImplementation(m);
-              if (!class_addMethod(cls, sel, newImp, method_getTypeEncoding(m))) {
-                  orig = method_setImplementation(m, newImp);
-              }
-              return orig;
-          }
-
-          static void collect(UIView *v, NSMutableArray *out) {
-              NSString *n = NSStringFromClass([v class]);
-              if ([v isKindOfClass:[UITabBar class]] || [n containsString:@"TabBar"]) {
-                  [out addObject:v];
-              }
-              for (UIView *s in v.subviews) collect(s, out);
-          }
-
-          static NSArray<UIWindow *> *allWindows(void) {
-              NSMutableArray *ws = [NSMutableArray array];
-              for (UIScene *s in UIApplication.sharedApplication.connectedScenes) {
-                  if ([s isKindOfClass:[UIWindowScene class]]) {
-                      [ws addObjectsFromArray:((UIWindowScene *)s).windows];
-                  }
-              }
-              return ws;
-          }
-
-          static NSArray<UIView *> *findBars(void) {
-              NSMutableArray *out = [NSMutableArray array];
-              for (UIWindow *w in allWindows()) collect(w, out);
-              return out;
-          }
-
-          static void sweep(void) {
-              for (UIView *v in findBars()) hideView(v);
-          }
-
-          static void showAlertWithRetry(int tries) {
-              UIWindow *win = nil;
-              for (UIWindow *w in allWindows()) { if (w.isKeyWindow) win = w; }
-              UIViewController *vc = win.rootViewController;
-              while (vc.presentedViewController) vc = vc.presentedViewController;
-              if (!vc) {
-                  if (tries > 0) {
-                      dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
-                                     dispatch_get_main_queue(), ^{ showAlertWithRetry(tries - 1); });
-                  }
-                  return;
-              }
-              NSArray *bars = findBars();
-              NSMutableArray *names = [NSMutableArray array];
-              for (UIView *v in bars) [names addObject:NSStringFromClass([v class])];
-              NSString *msg = [NSString stringWithFormat:@"Đã nạp. Tìm thấy %lu view TabBar: %@",
-                               (unsigned long)bars.count, [names componentsJoinedByString:@", "]];
-              UIAlertController *a = [UIAlertController alertControllerWithTitle:@"NuvioHideTabBar v4"
-                                                                         message:msg
-                                                                  preferredStyle:UIAlertControllerStyleAlert];
-              [a addAction:[UIAlertAction actionWithTitle:@"OK" style:UIAlertActionStyleDefault handler:nil]];
-              [vc presentViewController:a animated:YES completion:nil];
-          }
-
-          __attribute__((constructor)) static void NuvioHideTabBarInit(void) {
-              orig_layoutSubviews = (void *)hookMethod([UITabBar class], @selector(layoutSubviews), (IMP)new_layoutSubviews);
-              orig_setHidden = (void *)hookMethod([UITabBar class], @selector(setHidden:), (IMP)new_setHidden);
-
-              dispatch_async(dispatch_get_main_queue(), ^{
-                  [NSTimer scheduledTimerWithTimeInterval:0.3 repeats:YES block:^(NSTimer *t) { sweep(); }];
-              });
-
-              __block id token = nil;
-              token = [[NSNotificationCenter defaultCenter]
-                  addObserverForName:UIApplicationDidBecomeActiveNotification
-                              object:nil
-                               queue:[NSOperationQueue mainQueue]
-                          usingBlock:^(NSNotification *n) {
-                  [[NSNotificationCenter defaultCenter] removeObserver:token];
-                  dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.0 * NSEC_PER_SEC)),
-                                 dispatch_get_main_queue(), ^{ showAlertWithRetry(6); });
-              }];
-          }
-          EOF
-          cat > inject.py <<'EOF'
-          # Thêm LC_LOAD_WEAK_DYLIB vào chỗ trống ở header Mach-O (byte-level, giống insert_dylib).
-          import struct, sys
-          exe, name = sys.argv[1], sys.argv[2]
-          buf = bytearray(open(exe, "rb").read())
-          magic, = struct.unpack_from("<I", buf, 0)
-          assert magic == 0xFEEDFACF, "can file Mach-O 64-bit arm64 (khong phai fat)"
-          ncmds, sizeofcmds = struct.unpack_from("<II", buf, 16)
-          # kiểm tra chưa chèn, và tìm offset section đầu tiên
-          off, minoff = 32, 1 << 62
-          for _ in range(ncmds):
-              cmd, size = struct.unpack_from("<II", buf, off)
-              if cmd in (0x0C, 0x8000001C, 0x18 | 0x80000000):
-                  pass
-              if cmd in (0x0C, 0x80000018):
-                  s = struct.unpack_from("<I", buf, off + 8)[0]
-                  if bytes(buf[off + s: off + size]).split(b"\0")[0].decode() == name:
-                      print("da co san, bo qua"); sys.exit(0)
-              if cmd == 0x19:
-                  nsects, = struct.unpack_from("<I", buf, off + 64)
-                  so = off + 72
-                  for _ in range(nsects):
-                      sz, = struct.unpack_from("<Q", buf, so + 40)
-                      so_off, = struct.unpack_from("<I", buf, so + 48)
-                      if so_off and sz: minoff = min(minoff, so_off)
-                      so += 80
-              off += size
-          raw = name.encode() + b"\0"
-          cmdsize = (24 + len(raw) + 7) & ~7
-          used = 32 + sizeofcmds
-          assert used + cmdsize <= minoff, "khong du cho trong o header"
-          cmdbytes = struct.pack("<IIIIII", 0x80000018, cmdsize, 24, 2, 0x10000, 0x10000) + raw
-          cmdbytes += b"\0" * (cmdsize - len(cmdbytes))
-          assert all(b == 0 for b in buf[used:used + cmdsize]), "vung dich khong trong"
-          buf[used:used + cmdsize] = cmdbytes
-          struct.pack_into("<II", buf, 16, ncmds + 1, sizeofcmds + cmdsize)
-          open(exe, "wb").write(buf)
-          print("da chen", name, "-", cmdsize, "byte")
-          EOF
-
-      - name: Compile dylib
+      - name: Extract IPA and validate app
         run: |
-          xcrun -sdk iphoneos clang -dynamiclib -arch arm64 -fobjc-arc \
-            -miphoneos-version-min=14.0 -framework UIKit -framework Foundation \
-            -install_name @rpath/NuvioHideTabBar.dylib \
-            -o NuvioHideTabBar.dylib Tweak.m
-          codesign -f -s - NuvioHideTabBar.dylib
-          file NuvioHideTabBar.dylib
+          set -euo pipefail
+          mkdir -p work
+          unzip -q nuvio.ipa -d work
+          app="$(find work/Payload -maxdepth 1 -type d -name '*.app' -print -quit)"
+          test -n "$app"
+          exe=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")
+          bundle=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")
+          echo "APP_PATH=$app" >> "$GITHUB_ENV"
+          echo "APP_EXECUTABLE=$exe" >> "$GITHUB_ENV"
+          echo "APP_BUNDLE_ID=$bundle" >> "$GITHUB_ENV"
+          echo "Bundle: $bundle / executable: $exe"
+          file "$app/$exe"
 
-      - name: Download official IPA
+      - name: Compile arm64 dylib
         run: |
-          url=$(python3 -c "import json,urllib.request as u; d=json.load(u.urlopen('https://raw.githubusercontent.com/NuvioMedia/NuvioMobile/cmp-rewrite/store.json')); print(d['apps'][0]['versions'][0]['downloadURL'])")
-          echo "$url"
-          curl -L --fail -o nuvio.ipa "$url"
+          set -euo pipefail
+          xcrun --sdk iphoneos clang -dynamiclib -arch arm64 -fobjc-arc \
+            -miphoneos-version-min=16.0 \
+            -framework UIKit -framework Foundation -framework CoreText \
+            -framework UniformTypeIdentifiers \
+            -Wno-deprecated-declarations \
+            -install_name @rpath/NuvioFontManager.dylib \
+            -o NuvioFontManager.dylib Tweak.m
+          codesign -f -s - NuvioFontManager.dylib
+          file NuvioFontManager.dylib
 
-      - name: Inject into main executable
+      - name: Inject dylib into Nuvio executable
         run: |
-          mkdir x
-          unzip -q nuvio.ipa -d x
-          app=$(echo x/Payload/*.app)
-          cp NuvioHideTabBar.dylib "$app/Frameworks/"
-          rm -rf "$app/_CodeSignature"
-          python3 inject.py "$app/Nuvio" @rpath/NuvioHideTabBar.dylib
-          otool -L "$app/Nuvio" | grep NuvioHide
-          (cd x && zip -qry ../Nuvio-notabbar.ipa Payload)
-          ls -l Nuvio-notabbar.ipa
+          set -euo pipefail
+          mkdir -p "$APP_PATH/Frameworks"
+          cp NuvioFontManager.dylib "$APP_PATH/Frameworks/NuvioFontManager.dylib"
+          python3 inject.py "$APP_PATH/$APP_EXECUTABLE" @rpath/NuvioFontManager.dylib
+          otool -L "$APP_PATH/$APP_EXECUTABLE" | grep -F NuvioFontManager
+          rm -rf "$APP_PATH/_CodeSignature"
+          (cd work && zip -qry ../Nuvio-FontManager.ipa Payload)
+          unzip -tq Nuvio-FontManager.ipa
+          ls -lh Nuvio-FontManager.ipa NuvioFontManager.dylib
 
       - uses: actions/upload-artifact@v4
         with:
-          name: Nuvio-notabbar-ipa
-          path: Nuvio-notabbar.ipa
-      - uses: actions/upload-artifact@v4
-        with:
-          name: NuvioHideTabBar-dylib
-          path: NuvioHideTabBar.dylib
+          name: Nuvio-FontManager-iOS-arm64
+          path: |
+            Nuvio-FontManager.ipa
+            NuvioFontManager.dylib
+          if-no-files-found: error
+          retention-days: 14
