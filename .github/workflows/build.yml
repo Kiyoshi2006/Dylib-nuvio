@@ -193,3 +193,7 @@ jobs:
         with:
           name: Nuvio-notabbar-ipa
           path: Nuvio-notabbar.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NuvioHideTabBar-dylib
+          path: NuvioHideTabBar.dylib
